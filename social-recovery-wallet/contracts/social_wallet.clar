@@ -51,3 +51,24 @@
 ;; Only owner can call
 (define-private (check-owner)
   (ok (asserts! (default-to false (map-get? wallet-owners tx-sender)) ERR_UNAUTHORIZED)))
+
+
+  ;; Add a guardian
+(define-public (add-guardian (guardian (buff 20)))
+  (begin
+    (try! (check-owner))
+    (asserts! (not (default-to false (map-get? guardians guardian))) ERR_UNAUTHORIZED)
+    (map-set guardians guardian true)
+    (var-set guardian-count (+ (var-get guardian-count) u1))
+    (ok true)))
+
+;; Remove a guardian
+(define-public (remove-guardian (guardian (buff 20)))
+  (begin
+    (try! (check-owner))
+    (asserts! (default-to false (map-get? guardians guardian)) ERR_INVALID_GUARDIAN)
+    (map-delete guardians guardian)
+    (var-set guardian-count (- (var-get guardian-count) u1))
+    ;; Ensure threshold is still valid
+    (asserts! (<= (var-get guardian-threshold) (var-get guardian-count)) ERR_INVALID_THRESHOLD)
+    (ok true)))
