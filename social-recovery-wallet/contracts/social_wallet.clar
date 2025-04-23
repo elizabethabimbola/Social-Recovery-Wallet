@@ -72,3 +72,37 @@
     ;; Ensure threshold is still valid
     (asserts! (<= (var-get guardian-threshold) (var-get guardian-count)) ERR_INVALID_THRESHOLD)
     (ok true)))
+
+    ;; Update guardian threshold
+(define-public (update-threshold (new-threshold uint))
+  (begin
+    (try! (check-owner))
+    (asserts! (<= new-threshold (var-get guardian-count)) ERR_INVALID_THRESHOLD)
+    (asserts! (> new-threshold u0) ERR_INVALID_THRESHOLD)
+    (var-set guardian-threshold new-threshold)
+    (ok true)))
+
+;; Initiate recovery process - can be called by any guardian
+(define-public (initiate-recovery (new-owner (buff 20)))
+  (let ((recovery-id (var-get recovery-nonce)))
+    (asserts! (default-to false (map-get? guardians tx-sender)) ERR_INVALID_GUARDIAN)
+    
+    ;; Create new recovery process
+    (map-set recovery-status {recovery-id: recovery-id}
+      {
+        initiator: tx-sender,
+        proposed-owner: new-owner,
+        vote-count: u1,
+        threshold: (var-get guardian-threshold),
+        active: true,
+        completed: false
+      }
+    )
+    
+    ;; Register the initiator's vote
+    (map-set recovery-votes {recovery-id: recovery-id, guardian: tx-sender} true)
+    
+    ;; Increment nonce for future recovery attempts
+    (var-set recovery-nonce (+ recovery-id u1))
+    
+    (ok recovery-id)))
