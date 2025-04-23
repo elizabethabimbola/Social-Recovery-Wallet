@@ -37,3 +37,202 @@
 (define-data-var guardian-threshold uint u0)
 (define-data-var guardian-count uint u0)
 (define-data-var recovery-nonce uint u0)
+
+
+;; Initialize wallet
+(define-public (initialize (new-owner (buff 20)) (threshold uint))
+  (begin
+    (asserts! (is-eq (var-get owner) 0x) ERR_UNAUTHORIZED)
+    (var-set owner new-owner)
+    (var-set guardian-threshold threshold)
+    (map-set wallet-owners new-owner true)
+    (ok true)))
+
+;; Only owner can call
+(define-private (check-owner)
+  (ok (asserts! (default-to false (map-get? wallet-owners tx-sender)) ERR_UNAUTHORIZED)))
+
+
+  ;; Add a guardian
+(define-public (add-guardian (guardian (buff 20)))
+  (begin
+    (try! (check-owner))
+    (asserts! (not (default-to false (map-get? guardians guardian))) ERR_UNAUTHORIZED)
+    (map-set guardians guardian true)
+    (var-set guardian-count (+ (var-get guardian-count) u1))
+    (ok true)))
+
+;; Remove a guardian
+(define-public (remove-guardian (guardian (buff 20)))
+  (begin
+    (try! (check-owner))
+    (asserts! (default-to false (map-get? guardians guardian)) ERR_INVALID_GUARDIAN)
+    (map-delete guardians guardian)
+    (var-set guardian-count (- (var-get guardian-count) u1))
+    ;; Ensure threshold is still valid
+    (asserts! (<= (var-get guardian-threshold) (var-get guardian-count)) ERR_INVALID_THRESHOLD)
+    (ok true)))
+
+    ;; Update guardian threshold
+(define-public (update-threshold (new-threshold uint))
+  (begin
+    (try! (check-owner))
+    (asserts! (<= new-threshold (var-get guardian-count)) ERR_INVALID_THRESHOLD)
+    (asserts! (> new-threshold u0) ERR_INVALID_THRESHOLD)
+    (var-set guardian-threshold new-threshold)
+    (ok true)))
+
+;; Initiate recovery process - can be called by any guardian
+(define-public (initiate-recovery (new-owner (buff 20)))
+  (let ((recovery-id (var-get recovery-nonce)))
+    (asserts! (default-to false (map-get? guardians tx-sender)) ERR_INVALID_GUARDIAN)
+    
+    ;; Create new recovery process
+    (map-set recovery-status {recovery-id: recovery-id}
+      {
+        initiator: tx-sender,
+        proposed-owner: new-owner,
+        vote-count: u1,
+        threshold: (var-get guardian-threshold),
+        active: true,
+        completed: false
+      }
+    )
+    
+    ;; Register the initiator's vote
+    (map-set recovery-votes {recovery-id: recovery-id, guardian: tx-sender} true)
+    
+    ;; Increment nonce for future recovery attempts
+    (var-set recovery-nonce (+ recovery-id u1))
+    
+    (ok recovery-id)))
+
+
+    ;; Support a recovery process with your vote
+(define-public (support-recovery (recovery-id uint))
+  (let ((recovery (default-to 
+                   {
+                     initiator: 0x, 
+                     proposed-owner: 0x, 
+                     vote-count: u0, 
+                     threshold: u0, 
+                     active: false, 
+                     completed: false
+                   } 
+                   (map-get? recovery-status {recovery-id: recovery-id}))))
+    
+    ;; Check if the recovery process exists and is active
+    (asserts! (get active recovery) ERR_RECOVERY_NOT_ACTIVE)
+    (asserts! (not (get completed recovery)) ERR_RECOVERY_COMPLETED)
+    
+    ;; Check if the caller is a guardian
+    (asserts! (default-to false (map-get? guardians tx-sender)) ERR_INVALID_GUARDIAN)
+    
+    ;; Check if the guardian has already voted
+    (asserts! (not (default-to false (map-get? recovery-votes {recovery-id: recovery-id, guardian: tx-sender}))) ERR_ALREADY_VOTED)
+    
+    ;; Register the guardian's vote
+    (map-set recovery-votes {recovery-id: recovery-id, guardian: tx-sender} true)
+    
+    ;; Update vote count
+    (map-set recovery-status {recovery-id: recovery-id}
+      (merge recovery {vote-count: (+ (get vote-count recovery) u1)})
+    )
+    
+    (ok true)))
+
+
+    ;; Execute recovery if threshold is met
+(define-public (execute-recovery (recovery-id uint))
+  (let ((recovery (default-to 
+                   {
+                     initiator: 0x, 
+                     proposed-owner: 0x, 
+                     vote-count: u0, 
+                     threshold: u0, 
+                     active: false, 
+                     completed: false
+                   } 
+                   (map-get? recovery-status {recovery-id: recovery-id}))))
+    
+    ;; Check if the recovery process exists and is active
+    (asserts! (get active recovery) ERR_RECOVERY_NOT_ACTIVE)
+    (asserts! (not (get completed recovery)) ERR_RECOVERY_COMPLETED)
+    
+    ;; Check if threshold is met
+    (asserts! (>= (get vote-count recovery) (get threshold recovery)) ERR_THRESHOLD_NOT_MET)
+    
+    ;; Update recovery status
+    (map-set recovery-status {recovery-id: recovery-id}
+      (merge recovery {active: false, completed: true})
+    )
+    
+    ;; Update owner
+    (let ((new-owner (get proposed-owner recovery))
+          (old-owner (var-get owner)))
+      
+      ;; Remove old owner
+      (map-delete wallet-owners old-owner)
+      
+      ;; Set new owner
+      (var-set owner new-owner)
+      (map-set wallet-owners new-owner true)
+      
+      (ok true))))
+
+;; Cancel recovery attempt (only owner can do this)
+(define-public (cancel-recovery (recovery-id uint))
+  (begin
+    (try! (check-owner))
+    (let ((recovery (default-to 
+                     {
+                       initiator: 0x, 
+                       proposed-owner: 0x, 
+                       vote-count: u0, 
+                       threshold: u0, 
+                       active: false, 
+                       completed: false
+                     } 
+                     (map-get? recovery-status {recovery-id: recovery-id}))))
+      
+      ;; Check if the recovery process exists and is active
+      (asserts! (get active recovery) ERR_RECOVERY_NOT_ACTIVE)
+      (asserts! (not (get completed recovery)) ERR_RECOVERY_COMPLETED)
+      
+      ;; Update recovery status
+      (map-set recovery-status {recovery-id: recovery-id}
+        (merge recovery {active: false})
+      )
+      
+      (ok true))))
+
+;; Transfer funds from the wallet (only owner can do this)
+(define-public (transfer (token <ft-trait>) (recipient principal) (amount uint))
+  (begin
+    (try! (check-owner))
+    (contract-call? token transfer amount tx-sender recipient none)))
+
+;; Transfer STX from the wallet (only owner can do this)
+(define-public (transfer-stx (recipient principal) (amount uint))
+  (begin
+    (try! (check-owner))
+    (stx-transfer? amount tx-sender recipient)))
+
+;; Read-only functions for status checking
+(define-read-only (get-owner)
+  (var-get owner))
+
+(define-read-only (get-threshold)
+  (var-get guardian-threshold))
+
+(define-read-only (is-guardian (address (buff 20)))
+  (default-to false (map-get? guardians address)))
+
+(define-read-only (get-recovery-status (recovery-id uint))
+  (map-get? recovery-status {recovery-id: recovery-id}))
+
+(define-read-only (has-voted (recovery-id uint) (guardian (buff 20)))
+  (default-to false (map-get? recovery-votes {recovery-id: recovery-id, guardian: guardian})))
+
+(define-read-only (get-guardian-count)
+  (var-get guardian-count))
