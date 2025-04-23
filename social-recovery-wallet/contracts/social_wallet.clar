@@ -37,3 +37,17 @@
 (define-data-var guardian-threshold uint u0)
 (define-data-var guardian-count uint u0)
 (define-data-var recovery-nonce uint u0)
+
+
+;; Initialize wallet
+(define-public (initialize (new-owner (buff 20)) (threshold uint))
+  (begin
+    (asserts! (is-eq (var-get owner) 0x) ERR_UNAUTHORIZED)
+    (var-set owner new-owner)
+    (var-set guardian-threshold threshold)
+    (map-set wallet-owners new-owner true)
+    (ok true)))
+
+;; Only owner can call
+(define-private (check-owner)
+  (ok (asserts! (default-to false (map-get? wallet-owners tx-sender)) ERR_UNAUTHORIZED)))
